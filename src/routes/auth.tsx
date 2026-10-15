@@ -50,7 +50,10 @@ function AuthPage() {
       },
     });
     setBusy(false);
-    if (error) return toast.error(error.message);
+    if (error) {
+  console.log("Signup error:", error);
+  alert(error.message || "Signup failed");
+  return;
     navigate({ to: "/dashboard" });
  
   }
