@@ -33,30 +33,32 @@ function AuthPage() {
   }, [navigate]);
 
   async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    if (mode === "in") {
-      const { error } = await supabase.auth.signInWithPassword({ email: f.email, password: f.password });
-      setBusy(false);
-      if (error) return toast.error(error.message);
-      navigate({ to: "/dashboard" });
-    } else {
-  const { data, error } = await supabase.auth.signUp({
-    email: f.email,
-    password: f.password,
-    options: { 
-      emailRedirectTo: window.location.origin + "/dashboard",
-      data: { full_name: f.name, phone: f.phone } 
-    },
-  });
-  setBusy(false);
-  if (error) return toast.error(error.message);
-  if (data.session) {
+  e.preventDefault();
+  setBusy(true);
+  if (mode === "in") {
+    const { error } = await supabase.auth.signInWithPassword({ email: f.email, password: f.password });
+    setBusy(false);
+    if (error) return toast.error(error.message);
     navigate({ to: "/dashboard" });
   } else {
-    setSent(true);
+    const { data, error } = await supabase.auth.signUp({
+      email: f.email,
+      password: f.password,
+      options: {
+        emailRedirectTo: window.location.origin + "/dashboard",
+        data: { full_name: f.name, phone: f.phone },
+      },
+    });
+    setBusy(false);
+    if (error) return toast.error(error.message);
+    if (data.session) {
+      navigate({ to: "/dashboard" });
+    } else {
+      setSent(true);
+    }
   }
 }
+
 
   return (
     <div className="grid min-h-screen md:grid-cols-2">
