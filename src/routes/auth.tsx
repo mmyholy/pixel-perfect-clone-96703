@@ -51,11 +51,8 @@ function AuthPage() {
     });
     setBusy(false);
     if (error) return toast.error(error.message);
-    if (data.session) {
-      navigate({ to: "/dashboard" });
-    } else {
-      setSent(true);
-    }
+    navigate({ to: "/dashboard" });
+ 
   }
 }
 
