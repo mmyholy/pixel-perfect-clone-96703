@@ -54,6 +54,7 @@ function AuthPage() {
   console.log("Signup error:", error);
   alert(error.message || "Signup failed");
   return;
+    }
     navigate({ to: "/dashboard" });
  
   }
