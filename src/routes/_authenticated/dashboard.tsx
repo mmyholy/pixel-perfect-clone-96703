@@ -6,7 +6,8 @@ import { AssetDot } from "@/components/Logo";
 import { ActivityRow } from "@/components/ActivityRow";
 import { goalsQuery, profileQuery, txQuery, useGoals, useProfile, useTx } from "@/hooks/use-saveflow";
 import { ASSETS, accruedInterest, naira, units } from "@/lib/saveflow";
-
+import { AddToSavings } from "@/components/AddToSavings";
+import { useSavingsPreviews } from "@/hooks/use-savings-actions";
 export const Route = createFileRoute("/_authenticated/dashboard")({
   head: () => ({ meta: [{ title: "Dashboard — SaveFlow" }, { name: "description", content: "Your SaveFlow savings overview." }] }),
   loader: ({ context }) =>
@@ -23,7 +24,12 @@ function Dashboard() {
   const goals = useGoals().filter((g) => g.status === "active");
   const tx = useTx();
   const total = goals.reduce((s, g) => s + g.principal_ngn, 0);
-  const interest = goals.reduce((s, g) => s + accruedInterest(g.principal_ngn, g.interest_rate, new Date(g.created_at)), 0);
+  const previews = useSavingsPreviews(goals);
+
+const interest = Object.values(previews.data ?? {}).reduce(
+  (sum, p) => sum + p.interest + p.forfeited_interest,
+  0
+);
   const pctUsed = goals.reduce((s, g) => s + g.percentage, 0);
 
   return (
@@ -37,7 +43,13 @@ function Dashboard() {
         <div className="rounded-3xl bg-ink-gradient p-6 text-ink-foreground md:col-span-2">
           <div className="flex items-center gap-2 text-sm text-ink-foreground/70"><Lock className="size-4" /> Total locked savings</div>
           <p className="mt-2 font-display text-4xl font-bold tabular md:text-5xl">{naira(total)}</p>
-          <p className="mt-2 text-sm text-accent tabular">+{naira(interest)} interest earned (simulated)</p>
+          <p className="mt-2 text-sm text-accent tabular">
+  {previews.isError
+    ? "Interest temporarily unavailable"
+    : previews.isPending
+      ? "Loading interest…"
+      : `+${naira(interest)} accrued interest (simulated)`}
+</p>
           <div className="mt-6 flex flex-wrap gap-2">
             <Button asChild variant="accent"><Link to="/receive"><ArrowDownToLine /> Simulate inflow</Link></Button>
             <Button asChild variant="outline" className="border-ink-foreground/30 bg-transparent text-ink-foreground hover:bg-ink-foreground/10 hover:text-ink-foreground"><Link to="/goals"><Plus /> New goal</Link></Button>
@@ -46,6 +58,10 @@ function Dashboard() {
         <div className="rounded-3xl border bg-card p-6 shadow-soft">
           <p className="text-sm text-muted-foreground">Available to spend</p>
           <p className="mt-2 font-display text-3xl font-bold tabular">{naira(Number(profile.available_balance))}</p>
+          <AddToSavings
+  goals={goals}
+  balance={Number(profile.available_balance)}
+/>
           <p className="mt-6 text-sm text-muted-foreground">Auto-saving per inflow</p>
           <p className="font-display text-2xl font-bold">{pctUsed}%</p>
           <Progress value={pctUsed} className="mt-2" />

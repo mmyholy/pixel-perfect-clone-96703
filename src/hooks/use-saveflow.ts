@@ -30,25 +30,48 @@ export type Tx = {
 export const profileQuery = queryOptions({
   queryKey: ["profile"],
   queryFn: async () => {
-    const { data: u } = await supabase.auth.getUser();
-    const { data, error } = await supabase.from("profiles").select("*").eq("id", u.user!.id).single();
+    const { data: auth, error: authError } =
+      await supabase.auth.getUser();
+
+    if (authError) throw authError;
+    if (!auth.user) throw new Error("Please sign in again");
+
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("id", auth.user.id)
+      .single();
+
     if (error) throw error;
-    return { ...data, email: u.user!.email ?? "" };
+
+    return {
+      ...data,
+      full_name: data.full_name ?? "",
+      phone: data.phone ?? "",
+      available_balance: Number(data.available_balance ?? 0),
+      email: auth.user.email ?? "",
+    };
   },
 });
 
 export const goalsQuery = queryOptions({
   queryKey: ["goals"],
   queryFn: async () => {
-    const { data, error } = await supabase.from("goals").select("*").order("created_at");
+    const { data, error } = await supabase
+      .from("goals")
+      .select("*")
+      .order("created_at");
+
     if (error) throw error;
+
     return (data ?? []).map((g) => ({
       ...g,
       percentage: Number(g.percentage),
       principal_ngn: Number(g.principal_ngn),
       units: Number(g.units),
       interest_rate: Number(g.interest_rate),
-      target_amount: g.target_amount == null ? null : Number(g.target_amount),
+      target_amount:
+        g.target_amount == null ? null : Number(g.target_amount),
     })) as Goal[];
   },
 });
@@ -61,8 +84,14 @@ export const txQuery = queryOptions({
       .select("*")
       .order("created_at", { ascending: false })
       .limit(300);
+
     if (error) throw error;
-    return (data ?? []).map((t) => ({ ...t, amount_ngn: Number(t.amount_ngn), units: t.units == null ? null : Number(t.units) })) as Tx[];
+
+    return (data ?? []).map((t) => ({
+      ...t,
+      amount_ngn: Number(t.amount_ngn),
+      units: t.units == null ? null : Number(t.units),
+    })) as Tx[];
   },
 });
 
