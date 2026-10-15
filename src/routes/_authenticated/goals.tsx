@@ -28,7 +28,6 @@ import {
 } from "@/hooks/use-savings-actions";
 import {
   ASSETS,
-  earlyPenalty,
   interestRateFor,
   naira,
   units,
@@ -53,26 +52,56 @@ export const Route = createFileRoute("/_authenticated/goals")({
 });
 
 function addMonthsYmd(months: number) {
-  const d = new Date();
-  const originalDay = d.getUTCDate();
+  const date = new Date();
+  const originalDay = date.getUTCDate();
 
-  d.setUTCDate(1);
-  d.setUTCMonth(d.getUTCMonth() + months);
+  date.setUTCDate(1);
+  date.setUTCMonth(date.getUTCMonth() + months);
 
   const lastDay = new Date(
-    Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0)
   ).getUTCDate();
 
-  d.setUTCDate(Math.min(originalDay, lastDay));
-  return d.toISOString().slice(0, 10);
+  date.setUTCDate(Math.min(originalDay, lastDay));
+
+  return date.toISOString().slice(0, 10);
+}
+
+function formatMaturity(date: string) {
+  return new Date(`${date}T00:00:00Z`).toLocaleDateString(
+    "en-NG",
+    {
+      dateStyle: "medium",
+      timeZone: "UTC",
+    }
+  );
+}
+
+function errorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error) return error.message;
+
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof error.message === "string"
+  ) {
+    return error.message;
+  }
+
+  return fallback;
 }
 
 function Goals() {
   const qc = useQueryClient();
   const all = useGoals();
-  const active = all.filter((g) => g.status === "active");
+  const active = all.filter((goal) => goal.status === "active");
   const previews = useSavingsPreviews(active);
-  const used = active.reduce((sum, g) => sum + g.percentage, 0);
+
+  const used = active.reduce(
+    (sum, goal) => sum + goal.percentage,
+    0
+  );
   const remaining = Math.max(0, 100 - used);
 
   const [name, setName] = useState("");
@@ -81,13 +110,18 @@ function Goals() {
   const [lock, setLock] =
     useState<(typeof LOCK_MONTHS)[number]>(3);
   const [busy, setBusy] = useState(false);
-  const [withdrawing, setWithdrawing] = useState<string | null>(null);
+  const [withdrawing, setWithdrawing] = useState<string | null>(
+    null
+  );
   const [removing, setRemoving] = useState<string | null>(null);
 
   const rate = interestRateFor(asset, lock);
+  const today = new Date().toISOString().slice(0, 10);
+  const actionBusy = withdrawing !== null || removing !== null;
 
-  async function create(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault();
+  async function create(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
     if (busy) return;
 
     const pct = Number(percentage);
@@ -133,43 +167,59 @@ function Goals() {
 
       await qc.invalidateQueries({ queryKey: ["goals"] });
     } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : (error as { message?: string })?.message ??
-              "Could not create goal"
-      );
+      toast.error(errorMessage(error, "Could not create goal"));
     } finally {
       setBusy(false);
     }
   }
 
-  async function withdraw(g: Goal) {
-    if (withdrawing) return;
+  async function withdraw(goal: Goal) {
+    if (actionBusy) return;
 
-    setWithdrawing(g.id);
+    if (
+      goal.maturity_date >
+      new Date().toISOString().slice(0, 10)
+    ) {
+      toast.error(
+        `These savings are locked until ${formatMaturity(
+          goal.maturity_date
+        )}`
+      );
+      return;
+    }
+
+    setWithdrawing(goal.id);
 
     try {
-      const preview = await previewWithdrawal(g.id);
+      const preview = await previewWithdrawal(goal.id);
+
+      // The database preview makes the final maturity decision.
+      if (preview.early) {
+        toast.error(
+          `These savings are locked until ${formatMaturity(
+            goal.maturity_date
+          )}`
+        );
+        return;
+      }
 
       const confirmed = window.confirm(
         [
-          `Withdraw all savings from "${preview.goal}"?`,
+          `Withdraw matured savings from "${preview.goal}"?`,
           "",
           `Principal: ${naira(preview.principal)}`,
-          `Early withdrawal penalty: ${naira(preview.penalty)}`,
           `Interest payable: ${naira(preview.interest)}`,
-          `Interest forfeited: ${naira(preview.forfeited_interest)}`,
           "",
           `Return to available balance: ${naira(preview.payout)}`,
           "",
           "This closes the goal and stops its automatic allocation.",
+          "This moves simulated funds to your available balance.",
         ].join("\n")
       );
 
       if (!confirmed) return;
 
-      const result = await withdrawGoal(g.id);
+      const result = await withdrawGoal(goal.id);
 
       toast.success(
         `${naira(result.payout)} returned to available balance`
@@ -177,24 +227,27 @@ function Goals() {
 
       await qc.invalidateQueries();
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Withdrawal failed"
-      );
+      toast.error(errorMessage(error, "Withdrawal failed"));
     } finally {
       setWithdrawing(null);
     }
   }
 
-  async function removeEmpty(g: Goal) {
-    if (removing) return;
+  async function removeEmpty(goal: Goal) {
+    if (actionBusy) return;
 
-    setRemoving(g.id);
+    if (goal.principal_ngn !== 0 || goal.units !== 0) {
+      toast.error("Only empty goals can be removed");
+      return;
+    }
+
+    setRemoving(goal.id);
 
     try {
       const { data, error } = await supabase
         .from("goals")
         .delete()
-        .eq("id", g.id)
+        .eq("id", goal.id)
         .select("id");
 
       if (error) throw error;
@@ -208,12 +261,7 @@ function Goals() {
       toast.success("Goal removed");
       await qc.invalidateQueries({ queryKey: ["goals"] });
     } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : (error as { message?: string })?.message ??
-              "Could not remove goal"
-      );
+      toast.error(errorMessage(error, "Could not remove goal"));
     } finally {
       setRemoving(null);
     }
@@ -223,7 +271,9 @@ function Goals() {
     <div className="space-y-8">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold md:text-3xl">Goals</h1>
+          <h1 className="text-2xl font-bold md:text-3xl">
+            Goals
+          </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Lock a slice of every inflow into Naira, Dollar,
             Bitcoin or USDT.
@@ -234,7 +284,9 @@ function Goals() {
           <p className="text-sm text-muted-foreground">
             Allocated per inflow
           </p>
-          <p className="font-display text-2xl font-bold">{used}%</p>
+          <p className="font-display text-2xl font-bold">
+            {used}%
+          </p>
           <Progress value={used} className="mt-1 w-40" />
         </div>
       </div>
@@ -249,43 +301,39 @@ function Goals() {
             </div>
           ) : (
             <ul className="space-y-4">
-              {active.map((g) => {
-                const mature =
-                  g.maturity_date <=
-                  new Date().toISOString().slice(0, 10);
-
-                const preview = previews.data?.[g.id];
+              {active.map((goal) => {
+                const mature = goal.maturity_date <= today;
+                const maturityLabel = formatMaturity(
+                  goal.maturity_date
+                );
+                const preview = previews.data?.[goal.id];
                 const interest = preview
                   ? preview.interest + preview.forfeited_interest
                   : null;
 
                 const pct =
-                  g.target_amount && g.target_amount > 0
+                  goal.target_amount && goal.target_amount > 0
                     ? Math.min(
                         100,
-                        (g.principal_ngn / g.target_amount) * 100
+                        (goal.principal_ngn / goal.target_amount) * 100
                       )
                     : null;
 
-                const maturityLabel = new Date(
-                  `${g.maturity_date}T00:00:00Z`
-                ).toLocaleDateString("en-NG", {
-                  dateStyle: "medium",
-                  timeZone: "UTC",
-                });
+                const funded =
+                  goal.principal_ngn > 0 || goal.units > 0;
 
                 return (
                   <li
-                    key={g.id}
+                    key={goal.id}
                     className="rounded-3xl border bg-card p-6 shadow-soft"
                   >
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
-                        <p className="flex items-center gap-2 font-semibold">
-                          <AssetDot asset={g.asset} />
-                          {g.name}
+                        <p className="flex flex-wrap items-center gap-2 font-semibold">
+                          <AssetDot asset={goal.asset} />
+                          {goal.name}
                           <span className="text-sm font-normal text-muted-foreground">
-                            · {g.percentage}%
+                            · {goal.percentage}%
                           </span>
                         </p>
 
@@ -293,25 +341,31 @@ function Goals() {
                           <Lock className="size-3" />
                           {mature
                             ? "Matured"
-                            : `Locks until ${maturityLabel}`}
-                          <span>· {g.interest_rate}% / yr</span>
+                            : `Locked until ${maturityLabel}`}
+                          <span>
+                            · {goal.interest_rate}% / yr
+                          </span>
                         </p>
                       </div>
 
                       <div className="text-right">
                         <p className="font-display text-xl font-bold tabular">
-                          {units(g.units, g.asset)}
+                          {units(goal.units, goal.asset)}
                         </p>
-                        {g.asset !== "NGN" && (
+
+                        {goal.asset !== "NGN" && (
                           <p className="text-xs text-muted-foreground tabular">
-                            ≈ {naira(g.principal_ngn)}
+                            ≈ {naira(goal.principal_ngn)}
                           </p>
                         )}
                       </div>
                     </div>
 
                     {pct != null && (
-                      <Progress value={pct} className="mt-3 h-1.5" />
+                      <Progress
+                        value={pct}
+                        className="mt-3 h-1.5"
+                      />
                     )}
 
                     <p className="mt-3 text-sm text-accent tabular">
@@ -323,38 +377,41 @@ function Goals() {
                     </p>
 
                     <div className="mt-4 flex flex-wrap gap-2">
-                      {g.principal_ngn > 0 ? (
+                      {funded ? (
                         <Button
                           type="button"
                           variant={mature ? "default" : "outline"}
                           size="sm"
-                          disabled={
-                            withdrawing !== null || removing !== null
-                          }
-                          onClick={() => withdraw(g)}
+                          disabled={!mature || actionBusy}
+                          onClick={() => withdraw(goal)}
                         >
-                          {withdrawing === g.id
+                          {withdrawing === goal.id
                             ? "Processing…"
                             : mature
-                              ? "Withdraw savings"
-                              : `Withdraw early (−${naira(
-                                  earlyPenalty(g.principal_ngn)
-                                )} penalty)`}
+                              ? "Withdraw matured savings"
+                              : `Locked until ${maturityLabel}`}
                         </Button>
                       ) : (
                         <Button
                           type="button"
                           variant="ghost"
                           size="sm"
-                          disabled={
-                            removing !== null || withdrawing !== null
-                          }
-                          onClick={() => removeEmpty(g)}
+                          disabled={actionBusy}
+                          onClick={() => removeEmpty(goal)}
                         >
-                          {removing === g.id ? "Removing…" : "Remove"}
+                          {removing === goal.id
+                            ? "Removing…"
+                            : "Remove empty goal"}
                         </Button>
                       )}
                     </div>
+
+                    {funded && !mature && (
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        These savings cannot be withdrawn before{" "}
+                        {maturityLabel}.
+                      </p>
+                    )}
                   </li>
                 );
               })}
@@ -367,7 +424,8 @@ function Goals() {
           className="h-fit space-y-4 rounded-3xl border bg-card p-6 shadow-soft"
         >
           <h2 className="flex items-center gap-2 font-semibold">
-            <Plus className="size-4" /> New goal
+            <Plus className="size-4" />
+            New goal
           </h2>
 
           <div className="space-y-1.5">
@@ -378,7 +436,7 @@ function Goals() {
               value={name}
               maxLength={80}
               disabled={busy}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(event) => setName(event.target.value)}
             />
           </div>
 
@@ -389,11 +447,14 @@ function Goals() {
             <Input
               id="goal-pct"
               inputMode="decimal"
-              placeholder={remaining > 0 ? `Up to ${remaining}` : "0"}
+              placeholder={
+                remaining > 0 ? `Up to ${remaining}` : "0"
+              }
               value={percentage}
               disabled={busy}
-              onChange={(e) => {
-                const value = e.target.value;
+              onChange={(event) => {
+                const value = event.target.value;
+
                 if (/^\d*\.?\d*$/.test(value)) {
                   setPercentage(value);
                 }
@@ -415,9 +476,12 @@ function Goals() {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {ASSETS.map((a) => (
-                  <SelectItem key={a.id} value={a.id}>
-                    {a.label}
+                {ASSETS.map((option) => (
+                  <SelectItem
+                    key={option.id}
+                    value={option.id}
+                  >
+                    {option.label}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -430,7 +494,9 @@ function Goals() {
               value={String(lock)}
               disabled={busy}
               onValueChange={(value) =>
-                setLock(Number(value) as (typeof LOCK_MONTHS)[number])
+                setLock(
+                  Number(value) as (typeof LOCK_MONTHS)[number]
+                )
               }
             >
               <SelectTrigger id="goal-lock">
@@ -438,7 +504,10 @@ function Goals() {
               </SelectTrigger>
               <SelectContent>
                 {LOCK_MONTHS.map((months) => (
-                  <SelectItem key={months} value={String(months)}>
+                  <SelectItem
+                    key={months}
+                    value={String(months)}
+                  >
                     {months} month{months === 1 ? "" : "s"} ·{" "}
                     {interestRateFor(asset, months)}% / yr
                   </SelectItem>
@@ -448,8 +517,8 @@ function Goals() {
           </div>
 
           <p className="text-sm text-muted-foreground">
-            This lock earns {rate}% a year. Early withdrawal
-            forfeits interest and costs 7%.
+            This lock earns {rate}% a year in this simulation.
+            Savings cannot be withdrawn before the maturity date.
           </p>
 
           <Button
